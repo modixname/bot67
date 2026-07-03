@@ -368,30 +368,21 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await _ask_groq(update, context, "Опиши что на фото. Если есть текст — прочитай.", image_data=base64_image)
 
 # ---------------------------------------------------------------------------
-#  BOT START (called when Flask starts)
+#  MAIN
 # ---------------------------------------------------------------------------
 
-def start_bot():
-    global BOT_STARTED
+if __name__ == "__main__":
     if not TELEGRAM_TOKEN:
-        logger.error("❌ TELEGRAM_BOT_TOKEN не найден!")
-        return
+        raise ValueError("❌ TELEGRAM_BOT_TOKEN не найден!")
     if not GROQ_API_KEY:
-        logger.error("❌ GROQ_API_KEY не найден!")
-        return
-    try:
-        app = Application.builder().token(TELEGRAM_TOKEN).build()
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(CommandHandler("menu", start))
-        app.add_handler(CallbackQueryHandler(callback_handler))
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-        BOT_STARTED = True
-        logger.info("🚀 Bot started!")
-        app.run_polling(allowed_updates=Update.ALL_TYPES)
-    except Exception as e:
-        logger.error(f"❌ Bot error: {e}")
+        raise ValueError("❌ GROQ_API_KEY не найден!")
 
-# Start bot in background thread when module loads
-bot_thread = threading.Thread(target=start_bot, daemon=True)
-bot_thread.start()
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("menu", start))
+    app.add_handler(CallbackQueryHandler(callback_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+
+    logger.info("🚀 Bot started!")
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
