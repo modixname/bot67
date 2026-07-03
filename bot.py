@@ -823,16 +823,22 @@ def _setup_bot():
     # Use webhook for Render, polling for local
     webhook_url = os.getenv("WEBHOOK_URL")
     if webhook_url:
-        # Webhook mode (for Render) - run in main thread
+        # Webhook mode (for Render) - disable signal handlers for thread safety
         app.run_webhook(
             listen="0.0.0.0",
             port=int(os.getenv("PORT", 3000)),
             url_path=TELEGRAM_TOKEN,
-            webhook_url=f"{webhook_url}/{TELEGRAM_TOKEN}"
+            webhook_url=f"{webhook_url}/{TELEGRAM_TOKEN}",
+            close_loop=False
         )
     else:
         # Polling mode (for local development)
         app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+# Start bot in background thread when module loads (for Render/Gunicorn)
+if TELEGRAM_TOKEN and GROQ_API_KEY:
+    bot_thread = threading.Thread(target=_setup_bot, daemon=True)
+    bot_thread.start()
 
 # For local development
 if __name__ == "__main__":
