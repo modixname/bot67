@@ -47,7 +47,7 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
-о
+
 # ── Flask (main Render process) ──────────────────────────────────────────────
 server = Flask(__name__)
 BOT_STARTED = False
