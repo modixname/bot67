@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: tg-ai-bot
+    runtime: python
+    repo: https://github.com/modixname/bot67
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
