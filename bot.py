@@ -25,6 +25,10 @@ from telegram.ext import (
 )
 from groq import Groq
 
+# Актуальные модели Groq (июль 2026)
+GROQ_VISION_MODEL = "llama-3.2-11b-vision-preview"
+GROQ_TEXT_MODEL = "llama-3.3-70b-versatile"
+
 # ── Load environment ─────────────────────────────────────────────────────────
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -264,8 +268,9 @@ async def _ask_groq(
         else:
             messages[1]["content"] = prompt
 
+        model_to_use = GROQ_VISION_MODEL if image_data else GROQ_TEXT_MODEL
         completion = groq_client.chat.completions.create(
-            model="llama-3.2-90b-vision-preview",  # supports text + vision
+            model=model_to_use,
             messages=messages,
             temperature=0.7,
             max_tokens=1024,
@@ -282,7 +287,7 @@ async def _ask_groq(
                 "Keep it under 200 characters."
             )
             img_prompt_completion = groq_client.chat.completions.create(
-                model="llama-3.2-90b-vision-preview",
+                model=GROQ_TEXT_MODEL,
                 messages=[{"role": "user", "content": image_prompt}],
                 temperature=0.8,
                 max_tokens=300,
