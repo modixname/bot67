@@ -834,6 +834,6 @@ def _setup_bot():
         # Polling mode (for local development)
         app.run_polling(allowed_updates=Update.ALL_TYPES)
 
-# Start bot only when running directly (not when imported by Gunicorn)
+# For local development
 if __name__ == "__main__":
     _setup_bot()
