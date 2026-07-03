@@ -2,16 +2,15 @@
 """
 Telegram Bot with AI assistant and Mini-Games
 Powered by Groq API (free, fast LLM inference)
+Deployed on Render with Gunicorn + Flask
 """
 import os
-import sys
 import logging
 import random
 import base64
-import asyncio
 import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Optional
+from flask import Flask, jsonify
 
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -25,10 +24,6 @@ from telegram.ext import (
 )
 from groq import Groq
 
-# ── Groq models ──────────────────────────────────────────────────────────────
-GROQ_VISION_MODEL = "llama-3.2-11b-vision-preview"
-GROQ_TEXT_MODEL = "llama-3.3-70b-versatile"
-
 # ── Env ──────────────────────────────────────────────────────────────────────
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -41,17 +36,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ── Groq client ──────────────────────────────────────────────────────────────
+# ── Flask (main Render process) ──────────────────────────────────────────────
+server = Flask(__name__)
+BOT_STARTED = False
+
+@server.route("/")
+@server.route("/health")
+def health():
+    return jsonify({"status": "ok", "bot_running": BOT_STARTED})
+
+# ── Groq models & client ────────────────────────────────────────────────────
+GROQ_VISION_MODEL = "llama-3.2-11b-vision-preview"
+GROQ_TEXT_MODEL = "llama-3.3-70b-versatile"
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 # ── Game state ───────────────────────────────────────────────────────────────
-# guess_number: {user_id: {"number": int, "attempts": int, "guessed": bool}}
 guess_sessions: dict = {}
-# rps: {user_id: int} — user's choice (0=rock,1=paper,2=scissors)
-rps_sessions: dict = {}
-# dice: {user_id: {"balance": int}}
 dice_sessions: dict = {}
-# tictactoe: {user_id: {"board": list, "turn": str (bot/user), "winner": str}}
 ttt_sessions: dict = {}
 
 QUIZ_QUESTIONS = [
@@ -105,7 +106,6 @@ def rps_choice_markup(user_id: int) -> InlineKeyboardMarkup:
     ])
 
 def ttt_board_markup(user_id: int, board: list) -> InlineKeyboardMarkup:
-    """Render tic-tac-toe board (3x3). Board is list of 9 cells 'X','O',' '."""
     symbols = {"X": "❌", "O": "⭕", " ": "⬜"}
     kb = []
     for r in range(3):
@@ -113,7 +113,6 @@ def ttt_board_markup(user_id: int, board: list) -> InlineKeyboardMarkup:
         for c in range(3):
             idx = r * 3 + c
             cell = board[idx]
-            # if cell is empty and game not over, make it clickable
             if cell == " ":
                 row.append(InlineKeyboardButton("⬜", callback_data=f"ttt_{idx}_{user_id}"))
             else:
@@ -126,13 +125,8 @@ def ttt_board_markup(user_id: int, board: list) -> InlineKeyboardMarkup:
 #  HELPERS
 # ---------------------------------------------------------------------------
 
-def check_ttt_winner(board: list) -> Optional[str]:
-    """Return 'X', 'O', 'tie' or None."""
-    wins = [
-        [0,1,2],[3,4,5],[6,7,8],
-        [0,3,6],[1,4,7],[2,5,8],
-        [0,4,8],[2,4,6]
-    ]
+def check_ttt_winner(board):
+    wins = [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]]
     for w in wins:
         if board[w[0]] == board[w[1]] == board[w[2]] != " ":
             return board[w[0]]
@@ -140,31 +134,20 @@ def check_ttt_winner(board: list) -> Optional[str]:
         return "tie"
     return None
 
-def ttt_bot_move(board: list) -> int:
-    """Simple bot: win -> block -> center -> random corner -> random edge."""
-    # Win
+def ttt_bot_move(board):
     for i in range(9):
         if board[i] == " ":
             b = board.copy(); b[i] = "O"
-            if check_ttt_winner(b) == "O":
-                return i
-    # Block
+            if check_ttt_winner(b) == "O": return i
     for i in range(9):
         if board[i] == " ":
             b = board.copy(); b[i] = "X"
-            if check_ttt_winner(b) == "X":
-                return i
-    # Center
-    if board[4] == " ":
-        return 4
-    # Corners
+            if check_ttt_winner(b) == "X": return i
+    if board[4] == " ": return 4
     for i in [0,2,6,8]:
-        if board[i] == " ":
-            return i
-    # Edges
+        if board[i] == " ": return i
     for i in [1,3,5,7]:
-        if board[i] == " ":
-            return i
+        if board[i] == " ": return i
     return -1
 
 # ---------------------------------------------------------------------------
@@ -177,7 +160,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"👋 Привет, {user.first_name}!\n\n"
         "Я — бот с искусственным интеллектом от Groq. Я умею:\n"
         "• Отвечать на вопросы (текст / фото)\n"
-        "• Генерировать изображения (описания → картинка)\n"
+        "• Генерировать изображения\n"
         "• Играть в мини-игры 🎮\n\n"
         "Выбери раздел ниже 👇"
     )
@@ -192,63 +175,35 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     data = query.data
     user_id = query.from_user.id
 
-    # ── Tab switching ────────────────────────────────────────────────────
     if data == "tab_ai":
         context.user_data["current_tab"] = "ai"
-        await query.edit_message_text(
-            "🤖 <b>AI Чат</b>\n\nПросто напиши мне любой вопрос — я отвечу!\n"
-            "Также я понимаю фото — просто отправь изображение.",
-            reply_markup=back_menu(), parse_mode="HTML",
-        )
+        await query.edit_message_text("🤖 <b>AI Чат</b>\n\nПросто напиши мне любой вопрос!", reply_markup=back_menu(), parse_mode="HTML")
         return
-
     if data == "tab_games":
         context.user_data["current_tab"] = "games"
-        await query.edit_message_text(
-            "🎮 <b>Игры</b>\n\nВыбери игру ниже 👇", reply_markup=games_menu_markup(), parse_mode="HTML"
-        )
+        await query.edit_message_text("🎮 <b>Игры</b>\n\nВыбери игру ниже 👇", reply_markup=games_menu_markup(), parse_mode="HTML")
         return
-
     if data == "tab_vision":
         context.user_data["current_tab"] = "vision"
-        await query.edit_message_text(
-            "📸 <b>Распознавание фото</b>\n\nОтправь мне фотографию, и я опишу, что на ней.",
-            reply_markup=back_menu(), parse_mode="HTML",
-        )
+        await query.edit_message_text("📸 <b>Распознавание фото</b>\n\nОтправь фото!", reply_markup=back_menu(), parse_mode="HTML")
         return
-
     if data == "tab_generate":
         context.user_data["current_tab"] = "generate"
-        await query.edit_message_text(
-            "🎨 <b>Генерация изображений</b>\n\nНапиши описание, и я создам промпт!\n"
-            "Например: «кот в космосе, неон, киберпанк»",
-            reply_markup=back_menu(), parse_mode="HTML",
-        )
+        await query.edit_message_text("🎨 <b>Генерация</b>\n\nНапиши описание!", reply_markup=back_menu(), parse_mode="HTML")
         return
-
     if data == "back_menu":
         await start(update, context)
         return
-
-    # ── Games menu ──────────────────────────────────────────────────────
     if data == "game_guess":
         context.user_data["current_tab"] = "game_guess"
         number = random.randint(1, 50)
         guess_sessions[user_id] = {"number": number, "attempts": 0, "guessed": False}
-        await query.edit_message_text(
-            "🔢 <b>Угадай число</b>\n\nЯ загадал число от 1 до 50. Напиши свой вариант!",
-            reply_markup=back_menu(), parse_mode="HTML",
-        )
+        await query.edit_message_text("🔢 <b>Угадай число</b>\n\nЯ загадал число от 1 до 50!", reply_markup=back_menu(), parse_mode="HTML")
         return
-
     if data == "game_rps":
         context.user_data["current_tab"] = "game_rps"
-        await query.edit_message_text(
-            "✂️ <b>Камень-ножницы-бумага</b>\n\nВыбери свой вариант 👇",
-            reply_markup=rps_choice_markup(user_id), parse_mode="HTML",
-        )
+        await query.edit_message_text("✂️ <b>Камень-ножницы-бумага</b>\n\nВыбери 👇", reply_markup=rps_choice_markup(user_id), parse_mode="HTML")
         return
-
     if data == "game_quiz":
         context.user_data["current_tab"] = "game_quiz"
         context.user_data["quiz_idx"] = 0
@@ -256,319 +211,187 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         q = QUIZ_QUESTIONS[0]
         opts_kb = [[InlineKeyboardButton(o, callback_data=f"quiz_{i}_{user_id}")] for i, o in enumerate(q["opts"])]
         opts_kb.append([InlineKeyboardButton("⬅️ К играм", callback_data="tab_games")])
-        await query.edit_message_text(
-            f"❓ <b>Викторина</b>\n\nВопрос 1/{len(QUIZ_QUESTIONS)}:\n{q['q']}",
-            reply_markup=InlineKeyboardMarkup(opts_kb), parse_mode="HTML",
-        )
+        await query.edit_message_text(f"❓ <b>Викторина</b>\n\nВопрос 1/{len(QUIZ_QUESTIONS)}:\n{q['q']}", reply_markup=InlineKeyboardMarkup(opts_kb), parse_mode="HTML")
         return
-
     if data == "game_dice":
         context.user_data["current_tab"] = "game_dice"
         if user_id not in dice_sessions:
             dice_sessions[user_id] = {"balance": 100}
         bal = dice_sessions[user_id]["balance"]
-        await query.edit_message_text(
-            "🎲 <b>Кости (рулетка)</b>\n\n"
-            f"💰 Твой баланс: <b>{bal} 💎</b>\n\n"
-            "Напиши ставку (число от 1 до 10):\n"
-            "Например: <code>5</code> — поставишь 5 💎\n\n"
-            "Если выпадет 1-3 — проигрыш, 4-6 — выигрыш x2!",
-            reply_markup=back_menu(), parse_mode="HTML",
-        )
+        await query.edit_message_text(f"🎲 <b>Кости</b>\n\n💰 Баланс: <b>{bal} 💎</b>\n\nНапиши ставку!", reply_markup=back_menu(), parse_mode="HTML")
         return
-
     if data == "game_ttt":
         context.user_data["current_tab"] = "game_ttt"
         board = [" "]*9
         ttt_sessions[user_id] = {"board": board, "turn": "user"}
-        await query.edit_message_text(
-            "❌ <b>Крестики-нолики</b>\n\nТы играешь за ❌, бот за ⭕. Твой ход!",
-            reply_markup=ttt_board_markup(user_id, board), parse_mode="HTML",
-        )
+        await query.edit_message_text("❌ <b>Крестики-нолики</b>\n\nТвой ход!", reply_markup=ttt_board_markup(user_id, board), parse_mode="HTML")
         return
 
-    # ── RPS choice ──────────────────────────────────────────────────────
     if data.startswith("rps_"):
         parts = data.split("_")
-        choice = int(parts[1])
-        uid = int(parts[2])
-        if uid != user_id:
-            return
+        choice = int(parts[1]); uid = int(parts[2])
+        if uid != user_id: return
         bot_choice = random.randint(0, 2)
         names = {0: "🪨 Камень", 1: "📄 Бумага", 2: "✂️ Ножницы"}
-        result_map = {
-            (0,0): "Ничья!", (0,1): "Ты проиграл!", (0,2): "Ты выиграл!",
-            (1,0): "Ты выиграл!", (1,1): "Ничья!", (1,2): "Ты проиграл!",
-            (2,0): "Ты проиграл!", (2,1): "Ты выиграл!", (2,2): "Ничья!",
-        }
-        result = result_map[(choice, bot_choice)]
-        await query.edit_message_text(
-            f"✂️ <b>Камень-ножницы-бумага</b>\n\n"
-            f"Ты: {names[choice]}\n"
-            f"Бот: {names[bot_choice]}\n\n"
-            f"<b>{result}</b>",
-            reply_markup=rps_choice_markup(user_id), parse_mode="HTML",
-        )
+        results = {(0,0):"Ничья!",(0,1):"Ты проиграл!",(0,2):"Ты выиграл!",(1,0):"Ты выиграл!",(1,1):"Ничья!",(1,2):"Ты проиграл!",(2,0):"Ты проиграл!",(2,1):"Ты выиграл!",(2,2):"Ничья!"}
+        await query.edit_message_text(f"✂️ <b>КНБ</b>\n\nТы: {names[choice]}\nБот: {names[bot_choice]}\n\n<b>{results[(choice, bot_choice)]}</b>", reply_markup=rps_choice_markup(user_id), parse_mode="HTML")
         return
 
-    # ── Quiz answer ─────────────────────────────────────────────────────
     if data.startswith("quiz_"):
         parts = data.split("_")
-        ans_idx = int(parts[1])
-        uid = int(parts[2])
-        if uid != user_id:
-            return
-        idx = context.user_data.get("quiz_idx", 0)
-        score = context.user_data.get("quiz_score", 0)
+        ans_idx = int(parts[1]); uid = int(parts[2])
+        if uid != user_id: return
+        idx = context.user_data.get("quiz_idx", 0); score = context.user_data.get("quiz_score", 0)
         q = QUIZ_QUESTIONS[idx]
         correct = q["opts"][ans_idx] == q["a"]
-        if correct:
-            score += 1
-            context.user_data["quiz_score"] = score
-        next_idx = idx + 1
-        if next_idx >= len(QUIZ_QUESTIONS):
-            total = len(QUIZ_QUESTIONS)
-            await query.edit_message_text(
-                f"❓ <b>Викторина завершена!</b>\n\n"
-                f"Правильных ответов: <b>{score}/{total}</b>\n\n"
-                f"{'🎉 Отлично!' if score == total else '👍 Неплохо!' if score >= total//2 else '💪 Попробуй ещё!'}",
-                reply_markup=games_menu_markup(), parse_mode="HTML",
-            )
+        if correct: score += 1; context.user_data["quiz_score"] = score
+        nxt = idx + 1
+        if nxt >= len(QUIZ_QUESTIONS):
+            await query.edit_message_text(f"❓ <b>Викторина завершена!</b>\n\nПравильных: <b>{score}/{len(QUIZ_QUESTIONS)}</b>", reply_markup=games_menu_markup(), parse_mode="HTML")
             return
-        context.user_data["quiz_idx"] = next_idx
-        q_next = QUIZ_QUESTIONS[next_idx]
+        context.user_data["quiz_idx"] = nxt
+        q_next = QUIZ_QUESTIONS[nxt]
         opts_kb = [[InlineKeyboardButton(o, callback_data=f"quiz_{i}_{user_id}")] for i, o in enumerate(q_next["opts"])]
         opts_kb.append([InlineKeyboardButton("⬅️ К играм", callback_data="tab_games")])
-        feedback = "✅ Верно!" if correct else f"❌ Неверно! Правильный ответ: {q['a']}"
-        await query.edit_message_text(
-            f"❓ <b>Викторина</b>\n\n{feedback}\n\n"
-            f"Вопрос {next_idx+1}/{len(QUIZ_QUESTIONS)}:\n{q_next['q']}",
-            reply_markup=InlineKeyboardMarkup(opts_kb), parse_mode="HTML",
-        )
+        feedback = "✅ Верно!" if correct else f"❌ Неверно! Ответ: {q['a']}"
+        await query.edit_message_text(f"❓ <b>Викторина</b>\n\n{feedback}\n\nВопрос {nxt+1}/{len(QUIZ_QUESTIONS)}:\n{q_next['q']}", reply_markup=InlineKeyboardMarkup(opts_kb), parse_mode="HTML")
         return
 
-    # ── Tic Tac Toe ─────────────────────────────────────────────────────
     if data.startswith("ttt_"):
         parts = data.split("_")
         if len(parts) == 3:
-            cell = int(parts[1])
-            uid = int(parts[2])
-        elif len(parts) == 4:  # ttt_noop
-            return
-        else:
-            return
-        if uid != user_id:
-            return
+            cell = int(parts[1]); uid = int(parts[2])
+        else: return
+        if uid != user_id: return
         session = ttt_sessions.get(user_id)
-        if not session or session["turn"] != "user":
-            return
+        if not session or session["turn"] != "user": return
         board = session["board"]
-        if board[cell] != " ":
-            return
-        # User move
+        if board[cell] != " ": return
         board[cell] = "X"
-        winner = check_ttt_winner(board)
-        if winner:
+        w = check_ttt_winner(board)
+        if w:
             ttt_sessions[user_id] = {"board": board, "turn": "none"}
-            msg = _ttt_result_msg(winner)
-            await query.edit_message_text(msg, reply_markup=games_menu_markup(), parse_mode="HTML")
+            msg = {"X": "🎉 Ты выиграл!", "O": "😵 Бот выиграл!", "tie": "Ничья! 🤝"}.get(w, "")
+            await query.edit_message_text(f"❌ <b>Крестики-нолики</b>\n\n{msg}", reply_markup=games_menu_markup(), parse_mode="HTML")
             return
-        # Bot move
-        bot_cell = ttt_bot_move(board)
-        if bot_cell == -1:
-            ttt_sessions[user_id] = {"board": board, "turn": "none"}
-            await query.edit_message_text(
-                "❌ <b>Крестики-нолики</b>\n\nНичья! 🤝",
-                reply_markup=games_menu_markup(), parse_mode="HTML",
-            )
+        bc = ttt_bot_move(board)
+        if bc == -1:
+            await query.edit_message_text("❌ <b>Крестики-нолики</b>\n\nНичья! 🤝", reply_markup=games_menu_markup(), parse_mode="HTML")
             return
-        board[bot_cell] = "O"
-        winner = check_ttt_winner(board)
-        if winner:
+        board[bc] = "O"
+        w = check_ttt_winner(board)
+        if w:
             ttt_sessions[user_id] = {"board": board, "turn": "none"}
-            msg = _ttt_result_msg(winner)
-            await query.edit_message_text(msg, reply_markup=games_menu_markup(), parse_mode="HTML")
+            msg = {"X": "🎉 Ты выиграл!", "O": "😵 Бот выиграл!", "tie": "Ничья! 🤝"}.get(w, "")
+            await query.edit_message_text(f"❌ <b>Крестики-нолики</b>\n\n{msg}", reply_markup=games_menu_markup(), parse_mode="HTML")
             return
         session["turn"] = "user"
-        await query.edit_message_text(
-            "❌ <b>Крестики-нолики</b>\n\nТвой ход!",
-            reply_markup=ttt_board_markup(user_id, board), parse_mode="HTML",
-        )
+        await query.edit_message_text("❌ <b>Крестики-нолики</b>\n\nТвой ход!", reply_markup=ttt_board_markup(user_id, board), parse_mode="HTML")
         return
-
-def _ttt_result_msg(winner: str) -> str:
-    if winner == "X":
-        return "❌ <b>Крестики-нолики</b>\n\n🎉 Ты выиграл!"
-    elif winner == "O":
-        return "❌ <b>Крестики-нолики</b>\n\n😵 Бот выиграл!"
-    else:
-        return "❌ <b>Крестики-нолики</b>\n\nНичья! 🤝"
-
-# ── Text handler ─────────────────────────────────────────────────────────────
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     text = update.message.text.strip()
     tab = context.user_data.get("current_tab", "ai")
 
-    # ── Guess number ────────────────────────────────────────────────────
     if tab == "game_guess":
         session = guess_sessions.get(user_id)
         if not session or session.get("guessed"):
-            await update.message.reply_text("Начни новую игру из меню!", reply_markup=back_menu())
+            await update.message.reply_text("Начни игру из меню!", reply_markup=back_menu())
             return
-        try:
-            guess = int(text)
+        try: guess = int(text)
         except ValueError:
             await update.message.reply_text("Введи число от 1 до 50.")
             return
         session["attempts"] += 1
         num = session["number"]
-        if guess < num:
-            await update.message.reply_text(f"📉 Моё число <b>больше</b>! Попытка {session['attempts']}", parse_mode="HTML")
-        elif guess > num:
-            await update.message.reply_text(f"📈 Моё число <b>меньше</b>! Попытка {session['attempts']}", parse_mode="HTML")
+        if guess < num: await update.message.reply_text(f"📉 Больше! Попытка {session['attempts']}", parse_mode="HTML")
+        elif guess > num: await update.message.reply_text(f"📈 Меньше! Попытка {session['attempts']}", parse_mode="HTML")
         else:
             session["guessed"] = True
-            await update.message.reply_text(
-                f"🎉 <b>Поздравляю!</b> Ты угадал {num} за {session['attempts']} попыток!\n\n"
-                "Выбери другую игру в меню 👇",
-                reply_markup=games_menu_markup(), parse_mode="HTML",
-            )
+            await update.message.reply_text(f"🎉 Угадал {num} за {session['attempts']} попыток!", reply_markup=games_menu_markup(), parse_mode="HTML")
         return
 
-    # ── Dice ────────────────────────────────────────────────────────────
     if tab == "game_dice":
-        try:
-            bet = int(text)
+        try: bet = int(text)
         except ValueError:
-            await update.message.reply_text("Введи число — свою ставку.")
+            await update.message.reply_text("Введи число-ставку.")
             return
-        if user_id not in dice_sessions:
-            dice_sessions[user_id] = {"balance": 100}
+        if user_id not in dice_sessions: dice_sessions[user_id] = {"balance": 100}
         bal = dice_sessions[user_id]["balance"]
         if bet < 1 or bet > bal:
             await update.message.reply_text(f"Ставка от 1 до {bal} 💎")
             return
         roll = random.randint(1, 6)
         if roll >= 4:
-            win = bet * 2
             dice_sessions[user_id]["balance"] += bet
-            msg = f"🎲 Выпало: <b>{roll}</b> 🎉\n\nТы выиграл <b>{win} 💎</b>!"
+            msg = f"🎲 Выпало: <b>{roll}</b> 🎉\nВыиграл <b>{bet*2} 💎</b>!"
         else:
             dice_sessions[user_id]["balance"] -= bet
-            msg = f"🎲 Выпало: <b>{roll}</b> 😢\n\nТы проиграл <b>{bet} 💎</b>."
-        new_bal = dice_sessions[user_id]["balance"]
-        msg += f"\n💰 Баланс: <b>{new_bal} 💎</b>\n\nНапиши новую ставку или выбери другую игру."
-        if new_bal <= 0:
-            msg += "\n\n💸 Ты разорился! Напиши <b>/start</b> чтобы пополнить баланс."
-            dice_sessions[user_id]["balance"] = 100  # refill
-        await update.message.reply_text(msg, reply_markup=back_menu(), parse_mode="HTML")
+            msg = f"🎲 Выпало: <b>{roll}</b> 😢\nПроиграл <b>{bet} 💎</b>."
+        nb = dice_sessions[user_id]["balance"]
+        if nb <= 0: dice_sessions[user_id]["balance"] = 100; msg += "\n\n💸 Баланс пополнен до 100 💎"
+        await update.message.reply_text(f"{msg}\n💰 Баланс: <b>{dice_sessions[user_id]['balance']} 💎</b>", reply_markup=back_menu(), parse_mode="HTML")
         return
 
-    # ── AI Chat ─────────────────────────────────────────────────────────
     if tab in ("ai", "vision", "generate"):
         await _ask_groq(update, context, text)
         return
 
     await update.message.reply_text("Выбери раздел в меню 👇", reply_markup=main_menu_markup())
 
-# ── AI request ──────────────────────────────────────────────────────────────
-
-async def _ask_groq(
-    update: Update, context: ContextTypes.DEFAULT_TYPE,
-    prompt: str, image_data: Optional[str] = None,
-) -> None:
+async def _ask_groq(update: Update, context: ContextTypes.DEFAULT_TYPE, prompt: str, image_data: Optional[str] = None) -> None:
     typing_msg = await update.message.reply_text("⏳ Думаю...")
     try:
-        messages = [
-            {"role": "system", "content": AI_SYSTEM_PROMPT},
-            {"role": "user", "content": []},
-        ]
+        messages = [{"role": "system", "content": AI_SYSTEM_PROMPT}, {"role": "user", "content": []}]
         if image_data:
-            messages[1]["content"] = [
-                {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}},
-            ]
+            messages[1]["content"] = [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}}]
         else:
             messages[1]["content"] = prompt
-
         model = GROQ_VISION_MODEL if image_data else GROQ_TEXT_MODEL
-        completion = groq_client.chat.completions.create(
-            model=model, messages=messages, temperature=0.7, max_tokens=1024,
-        )
+        completion = groq_client.chat.completions.create(model=model, messages=messages, temperature=0.7, max_tokens=1024)
         reply = completion.choices[0].message.content
-
         if context.user_data.get("current_tab") == "generate":
-            img_prompt = (
-                f"Generate a detailed image generation prompt in English based on: {prompt}. Keep under 200 chars."
-            )
-            img_resp = groq_client.chat.completions.create(
-                model=GROQ_TEXT_MODEL,
-                messages=[{"role": "user", "content": img_prompt}],
-                temperature=0.8, max_tokens=300,
-            )
+            img_resp = groq_client.chat.completions.create(model=GROQ_TEXT_MODEL, messages=[{"role": "user", "content": f"Generate image prompt in English for: {prompt}. Keep under 200 chars."}], temperature=0.8, max_tokens=300)
             img_text = img_resp.choices[0].message.content
-            reply += (
-                f"\n\n🎨 <b>Промпт:</b>\n<code>{img_text}</code>\n\n"
-                "💡 Используй в бесплатных сервисах:\n"
-                "• <a href='https://huggingface.co/spaces/stabilityai/stable-diffusion'>Stable Diffusion</a>\n"
-                "• <a href='https://playgroundai.com'>Playground AI</a>\n"
-                "• <a href='https://perchance.org/ai-text-to-image-generator'>Perchance</a>"
-            )
+            reply += f"\n\n🎨 <b>Промпт:</b>\n<code>{img_text}</code>\n\n💡 <a href='https://huggingface.co/spaces/stabilityai/stable-diffusion'>Stable Diffusion</a> | <a href='https://playgroundai.com'>Playground AI</a> | <a href='https://perchance.org/ai-text-to-image-generator'>Perchance</a>"
         await typing_msg.edit_text(reply, parse_mode="HTML")
     except Exception as e:
         logger.exception("Groq error")
         await typing_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-
-# ── Photo handler ───────────────────────────────────────────────────────────
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     photo = update.message.photo[-1]
     file_obj = await photo.get_file()
     photo_bytes = await file_obj.download_as_bytearray()
     base64_image = base64.b64encode(photo_bytes).decode("utf-8")
-    await _ask_groq(update, context, "Опиши, что на фото. Если есть текст — прочитай его.", image_data=base64_image)
+    await _ask_groq(update, context, "Опиши что на фото. Если есть текст — прочитай.", image_data=base64_image)
 
 # ---------------------------------------------------------------------------
-#  MAIN
+#  BOT START (called when Flask starts)
 # ---------------------------------------------------------------------------
 
-# ── Simple health-check HTTP server for Render ──────────────────────────────
-class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-type", "text/plain")
-        self.end_headers()
-        self.wfile.write(b"OK")
-    def log_message(self, format, *args):
-        pass  # silence HTTP server logs
-
-def run_http_server():
-    port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), HealthHandler)
-    logger.info(f"🌐 Health server listening on port {port}")
-    server.serve_forever()
-
-def main() -> None:
+def start_bot():
+    global BOT_STARTED
     if not TELEGRAM_TOKEN:
-        raise ValueError("❌ TELEGRAM_BOT_TOKEN не найден!")
+        logger.error("❌ TELEGRAM_BOT_TOKEN не найден!")
+        return
     if not GROQ_API_KEY:
-        raise ValueError("❌ GROQ_API_KEY не найден!")
+        logger.error("❌ GROQ_API_KEY не найден!")
+        return
+    try:
+        app = Application.builder().token(TELEGRAM_TOKEN).build()
+        app.add_handler(CommandHandler("start", start))
+        app.add_handler(CommandHandler("menu", start))
+        app.add_handler(CallbackQueryHandler(callback_handler))
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+        BOT_STARTED = True
+        logger.info("🚀 Bot started!")
+        app.run_polling(allowed_updates=Update.ALL_TYPES)
+    except Exception as e:
+        logger.error(f"❌ Bot error: {e}")
 
-    # Start health server in a background thread (required by Render)
-    http_thread = threading.Thread(target=run_http_server, daemon=True)
-    http_thread.start()
-
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("menu", start))
-    app.add_handler(CallbackQueryHandler(callback_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-
-    logger.info("🚀 Bot started. Press Ctrl+C to stop.")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
-
-if __name__ == "__main__":
-    main()
+# Start bot in background thread when module loads
+bot_thread = threading.Thread(target=start_bot, daemon=True)
+bot_thread.start()
