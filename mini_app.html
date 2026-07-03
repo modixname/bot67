@@ -198,18 +198,13 @@
 </head>
 <body>
     <div class="container">
-        <h1>🎨 Generate Image</h1>
-
-        <div class="input-group">
-            <label>Select Model:</label>
-            <div class="model-select">
-                <div class="model-option selected" data-model="flux-pro">FLUX Pro</div>
-                <div class="model-option" data-model="stable-diffusion">SD 3</div>
-            </div>
+        <h1>🎨 Generate Image (FREE)</h1>
+        <div class="info-text" style="margin-bottom: 20px;">
+            ✨ Powered by Pollinations.ai - completely free!
         </div>
 
         <div class="input-group">
-            <label>Prompt (English):</label>
+            <label>Prompt (English or any language):</label>
             <textarea id="prompt" placeholder="e.g. A beautiful sunset over mountains, oil painting style"></textarea>
         </div>
 
@@ -233,14 +228,13 @@
         <div class="info-text" id="info"></div>
 
         <div class="button-group">
-            <button class="generate-btn" id="generateBtn">Generate</button>
+            <button class="generate-btn" id="generateBtn">Generate (FREE)</button>
             <button class="cancel-btn" id="cancelBtn">Cancel</button>
         </div>
     </div>
 
     <script>
-        let selectedModel = 'flux-pro';
-        let imageUrl = null;
+        let selectedModel = 'pollinations-free';
 
         // Initialize Telegram Web App
         Telegram.WebApp.ready();
@@ -251,15 +245,6 @@
         const generateBtn = document.getElementById('generateBtn');
         const cancelBtn = document.getElementById('cancelBtn');
         const infoText = document.getElementById('info');
-
-        // Model selection
-        document.querySelectorAll('.model-option').forEach(btn => {
-            btn.addEventListener('click', () => {
-                document.querySelectorAll('.model-option').forEach(b => b.classList.remove('selected'));
-                btn.classList.add('selected');
-                selectedModel = btn.dataset.model;
-            });
-        });
 
         // Preset buttons
         document.querySelectorAll('.preset-btn').forEach(btn => {
@@ -280,7 +265,7 @@
 
             generateBtn.disabled = true;
             preview.innerHTML = '<div class="spinner"></div>';
-            infoText.textContent = '⏳ Generating image...';
+            infoText.textContent = '⏳ Generating image (this is free!)...';
 
             try {
                 const response = await fetch('/api/generate-image', {
@@ -295,12 +280,11 @@
                 const data = await response.json();
 
                 if (data.success) {
-                    imageUrl = data.image_url;
-                    preview.innerHTML = `<img src="${data.image_url}" alt="Generated image">`;
+                    preview.innerHTML = `<img src="${data.image_url}" alt="Generated image" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22><text x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22>Image loading...</text></svg>'">`;
                     infoText.textContent = '✅ Image generated! Tap "Send" to share.';
                     
                     // Show send button
-                    generateBtn.textContent = 'Send';
+                    generateBtn.textContent = 'Send (FREE)';
                     generateBtn.className = 'generate-btn';
                     generateBtn.onclick = sendImage;
                 } else {
@@ -315,11 +299,14 @@
         });
 
         function sendImage() {
+            const promptText = prompt.value.trim();
+            const imageUrl = preview.querySelector('img')?.src;
+            
             if (imageUrl) {
                 Telegram.WebApp.sendData(JSON.stringify({
                     action: 'image_generated',
-                    prompt: prompt.value,
-                    model: selectedModel,
+                    prompt: promptText,
+                    model: 'pollinations-free',
                     image_url: imageUrl
                 }));
             }
