@@ -11,8 +11,11 @@ import base64
 import threading
 import time
 import html
+import json
+import requests
 from typing import Optional
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request, send_file
+from pathlib import Path
 
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -30,6 +33,7 @@ from groq import Groq
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+REPLICATE_API_KEY = os.getenv("REPLICATE_API_TOKEN")
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -51,6 +55,70 @@ def health():
         "bot_running": BOT_STARTED,
         "uptime": time.time() - BOT_START_TIME if BOT_START_TIME else None
     })
+
+@server.route("/mini-app")
+def mini_app():
+    """Serve Telegram Mini App"""
+    try:
+        mini_app_path = Path(__file__).parent / "mini_app.html"
+        if mini_app_path.exists():
+            return send_file(mini_app_path, mimetype="text/html")
+        return "Mini App not found", 404
+    except Exception as e:
+        logger.error(f"Error serving mini app: {e}")
+        return str(e), 500
+
+@server.route("/api/generate-image", methods=["POST"])
+def api_generate_image():
+    """API endpoint for image generation via Replicate"""
+    try:
+        if not REPLICATE_API_KEY:
+            return jsonify({"success": False, "error": "Replicate API key not configured"}), 400
+        
+        data = request.get_json()
+        prompt = data.get("prompt", "").strip()
+        model = data.get("model", "flux-pro")
+        
+        if not prompt:
+            return jsonify({"success": False, "error": "Prompt is required"}), 400
+        
+        # Map model names to Replicate model identifiers
+        model_map = {
+            "flux-pro": "black-forest-labs/flux-pro",
+            "stable-diffusion": "stability-ai/stable-diffusion-3"
+        }
+        
+        replicate_model = model_map.get(model, "black-forest-labs/flux-pro")
+        
+        # Call Replicate API
+        import replicate
+        replicate.Client(api_token=REPLICATE_API_KEY)
+        
+        # Generate image
+        output = replicate.run(
+            replicate_model,
+            input={
+                "prompt": prompt,
+                "guidance_scale": 7.5,
+                "num_outputs": 1,
+                "num_inference_steps": 25
+            }
+        )
+        
+        if output and isinstance(output, list) and len(output) > 0:
+            image_url = output[0] if isinstance(output[0], str) else output[0]
+            return jsonify({
+                "success": True,
+                "image_url": image_url,
+                "prompt": prompt,
+                "model": model
+            })
+        else:
+            return jsonify({"success": False, "error": "No image generated"}), 500
+            
+    except Exception as e:
+        logger.error(f"Image generation error: {e}")
+        return jsonify({"success": False, "error": str(e)[:200]}), 500
 
 # ── Groq models & client ────────────────────────────────────────────────────
 GROQ_VISION_MODEL = "llama-3.2-11b-vision-preview"
@@ -88,7 +156,8 @@ def main_menu_markup() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🤖 AI Чат", callback_data="tab_ai"),
          InlineKeyboardButton("🎮 Игры", callback_data="tab_games")],
         [InlineKeyboardButton("📸 Распознать фото", callback_data="tab_vision"),
-         InlineKeyboardButton("🎨 Сгенерировать", callback_data="tab_generate")],
+         InlineKeyboardButton("🎨 Генератор", callback_data="tab_generate")],
+        [InlineKeyboardButton("✨ Mini App", web_app={"url": os.getenv("RENDER_URL", "http://localhost:3000") + "/mini-app"})],
     ])
 
 def games_menu_markup() -> InlineKeyboardMarkup:
@@ -381,6 +450,78 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     base64_image = base64.b64encode(photo_bytes).decode("utf-8")
     await _ask_groq(update, context, "Опиши что на фото. Если есть текст — прочитай.", image_data=base64_image)
 
+async def handle_web_app_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle Mini App response data"""
+    try:
+        data = json.loads(update.web_app_data.data)
+        
+        if data.get("action") == "image_generated":
+            prompt = data.get("prompt")
+            image_url = data.get("image_url")
+            model = data.get("model", "flux-pro")
+            
+            # Format price based on model
+            price_map = {
+                "flux-pro": "$0.04",
+                "stable-diffusion": "$0.01"
+            }
+            price = price_map.get(model, "$0.03")
+            
+            await update.message.reply_photo(
+                image_url,
+                caption=f"✨ <b>Image Generated!</b>\n\n📝 Prompt: <code>{html.escape(prompt)}</code>\n💳 Cost: {price}\n🎨 Model: {model}",
+                parse_mode="HTML",
+                reply_markup=main_menu_markup()
+            )
+        
+    except Exception as e:
+        logger.error(f"Web app data error: {e}")
+        await update.message.reply_text(f"❌ Error processing Mini App data: {str(e)[:100]}")
+
+async def generate_image_replicate(prompt: str, model: str = "flux-pro") -> Optional[str]:
+    """Generate image using Replicate API and return URL with price"""
+    if not REPLICATE_API_KEY:
+        return None
+    
+    try:
+        import replicate
+        client = replicate.Client(api_token=REPLICATE_API_KEY)
+        
+        model_map = {
+            "flux-pro": "black-forest-labs/flux-pro",
+            "stable-diffusion": "stability-ai/stable-diffusion-3"
+        }
+        
+        replicate_model = model_map.get(model, "black-forest-labs/flux-pro")
+        
+        output = client.run(
+            replicate_model,
+            input={
+                "prompt": prompt,
+                "guidance_scale": 7.5,
+                "num_outputs": 1,
+                "num_inference_steps": 25
+            }
+        )
+        
+        if output and isinstance(output, list) and len(output) > 0:
+            image_url = output[0] if isinstance(output[0], str) else output[0]
+            return image_url
+            
+    except Exception as e:
+        logger.error(f"Replicate error: {e}")
+    
+    return None
+
+def format_price(model: str = "flux-pro") -> str:
+    """Return price in USD for image generation"""
+    prices = {
+        "flux-pro": "$0.04",
+        "stable-diffusion": "$0.01",
+        "dall-e-3": "$0.08"
+    }
+    return prices.get(model, "$0.03")
+
 # ---------------------------------------------------------------------------
 #  MAIN & BOT SETUP
 # ---------------------------------------------------------------------------
@@ -398,6 +539,7 @@ def _setup_bot():
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, handle_web_app_data))
 
     global BOT_STARTED, BOT_START_TIME
     BOT_START_TIME = time.time()

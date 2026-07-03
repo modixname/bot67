@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Image Generator</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: var(--tg-color-bg);
+            color: var(--tg-color-text);
+            padding: 20px;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 500px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            font-size: 24px;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
+        .input-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 500;
+            font-size: 14px;
+        }
+
+        textarea {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid var(--tg-color-hint);
+            border-radius: 8px;
+            background: var(--tg-color-bg-secondary);
+            color: var(--tg-color-text);
+            font-size: 16px;
+            font-family: inherit;
+            resize: vertical;
+            min-height: 80px;
+        }
+
+        textarea:focus {
+            outline: none;
+            border-color: var(--tg-color-link);
+        }
+
+        .preset-options {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            margin-bottom: 20px;
+        }
+
+        .preset-btn {
+            padding: 10px;
+            background: var(--tg-color-bg-secondary);
+            border: 1px solid var(--tg-color-hint);
+            border-radius: 8px;
+            color: var(--tg-color-text);
+            cursor: pointer;
+            font-size: 13px;
+            transition: all 0.2s;
+        }
+
+        .preset-btn:active {
+            background: var(--tg-color-link);
+            color: white;
+            border-color: var(--tg-color-link);
+        }
+
+        .preview-section {
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
+        .preview-box {
+            width: 100%;
+            aspect-ratio: 1;
+            background: var(--tg-color-bg-secondary);
+            border: 2px dashed var(--tg-color-hint);
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--tg-color-hint);
+            font-size: 14px;
+            overflow: hidden;
+        }
+
+        .preview-box img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 4px solid var(--tg-color-hint);
+            border-top-color: var(--tg-color-link);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .button-group {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        button {
+            padding: 14px 20px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .generate-btn {
+            background: var(--tg-color-button-color, #0088cc);
+            color: var(--tg-color-button-text-color, white);
+            grid-column: 1 / -1;
+        }
+
+        .generate-btn:active:not(:disabled) {
+            opacity: 0.8;
+            transform: scale(0.98);
+        }
+
+        .generate-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .cancel-btn {
+            background: var(--tg-color-bg-secondary);
+            color: var(--tg-color-text);
+            border: 1px solid var(--tg-color-hint);
+        }
+
+        .cancel-btn:active {
+            background: var(--tg-color-bg);
+        }
+
+        .model-select {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            margin-bottom: 20px;
+        }
+
+        .model-option {
+            padding: 10px;
+            background: var(--tg-color-bg-secondary);
+            border: 2px solid var(--tg-color-hint);
+            border-radius: 8px;
+            color: var(--tg-color-text);
+            cursor: pointer;
+            font-size: 13px;
+            transition: all 0.2s;
+        }
+
+        .model-option.selected {
+            background: var(--tg-color-link);
+            color: white;
+            border-color: var(--tg-color-link);
+        }
+
+        .info-text {
+            font-size: 12px;
+            color: var(--tg-color-hint);
+            margin-bottom: 15px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎨 Generate Image</h1>
+
+        <div class="input-group">
+            <label>Select Model:</label>
+            <div class="model-select">
+                <div class="model-option selected" data-model="flux-pro">FLUX Pro</div>
+                <div class="model-option" data-model="stable-diffusion">SD 3</div>
+            </div>
+        </div>
+
+        <div class="input-group">
+            <label>Prompt (English):</label>
+            <textarea id="prompt" placeholder="e.g. A beautiful sunset over mountains, oil painting style"></textarea>
+        </div>
+
+        <div class="input-group">
+            <label>Quick presets:</label>
+            <div class="preset-options">
+                <button class="preset-btn" data-preset="A stunning landscape with mountains">🏔️ Landscape</button>
+                <button class="preset-btn" data-preset="A cute cat wearing sunglasses">🐱 Animals</button>
+                <button class="preset-btn" data-preset="A futuristic city with neon lights">🌃 Sci-Fi</button>
+                <button class="preset-btn" data-preset="A delicious gourmet food dish">🍽️ Food</button>
+            </div>
+        </div>
+
+        <div class="preview-section">
+            <label>Preview:</label>
+            <div class="preview-box" id="preview">
+                <span>Image will appear here</span>
+            </div>
+        </div>
+
+        <div class="info-text" id="info"></div>
+
+        <div class="button-group">
+            <button class="generate-btn" id="generateBtn">Generate</button>
+            <button class="cancel-btn" id="cancelBtn">Cancel</button>
+        </div>
+    </div>
+
+    <script>
+        let selectedModel = 'flux-pro';
+        let imageUrl = null;
+
+        // Initialize Telegram Web App
+        Telegram.WebApp.ready();
+        Telegram.WebApp.expand();
+
+        const prompt = document.getElementById('prompt');
+        const preview = document.getElementById('preview');
+        const generateBtn = document.getElementById('generateBtn');
+        const cancelBtn = document.getElementById('cancelBtn');
+        const infoText = document.getElementById('info');
+
+        // Model selection
+        document.querySelectorAll('.model-option').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.model-option').forEach(b => b.classList.remove('selected'));
+                btn.classList.add('selected');
+                selectedModel = btn.dataset.model;
+            });
+        });
+
+        // Preset buttons
+        document.querySelectorAll('.preset-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                prompt.value = btn.dataset.preset;
+                prompt.focus();
+            });
+        });
+
+        // Generate image
+        generateBtn.addEventListener('click', async () => {
+            const promptText = prompt.value.trim();
+            
+            if (!promptText) {
+                infoText.textContent = '❌ Please enter a prompt';
+                return;
+            }
+
+            generateBtn.disabled = true;
+            preview.innerHTML = '<div class="spinner"></div>';
+            infoText.textContent = '⏳ Generating image...';
+
+            try {
+                const response = await fetch('/api/generate-image', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        prompt: promptText,
+                        model: selectedModel
+                    })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    imageUrl = data.image_url;
+                    preview.innerHTML = `<img src="${data.image_url}" alt="Generated image">`;
+                    infoText.textContent = '✅ Image generated! Tap "Send" to share.';
+                    
+                    // Show send button
+                    generateBtn.textContent = 'Send';
+                    generateBtn.className = 'generate-btn';
+                    generateBtn.onclick = sendImage;
+                } else {
+                    infoText.textContent = `❌ ${data.error || 'Failed to generate image'}`;
+                    generateBtn.disabled = false;
+                }
+            } catch (error) {
+                infoText.textContent = `❌ Error: ${error.message}`;
+                preview.innerHTML = '<span>Failed to generate</span>';
+                generateBtn.disabled = false;
+            }
+        });
+
+        function sendImage() {
+            if (imageUrl) {
+                Telegram.WebApp.sendData(JSON.stringify({
+                    action: 'image_generated',
+                    prompt: prompt.value,
+                    model: selectedModel,
+                    image_url: imageUrl
+                }));
+            }
+        }
+
+        // Cancel
+        cancelBtn.addEventListener('click', () => {
+            Telegram.WebApp.close();
+        });
+    </script>
+</body>
+</html>
