@@ -10,6 +10,7 @@ import random
 import base64
 import threading
 import time
+import html
 from typing import Optional
 from flask import Flask, jsonify
 
@@ -357,10 +358,17 @@ async def _ask_groq(update: Update, context: ContextTypes.DEFAULT_TYPE, prompt: 
         model = GROQ_VISION_MODEL if image_data else GROQ_TEXT_MODEL
         completion = groq_client.chat.completions.create(model=model, messages=messages, temperature=0.7, max_tokens=1024)
         reply = completion.choices[0].message.content
+        
         if context.user_data.get("current_tab") == "generate":
             img_resp = groq_client.chat.completions.create(model=GROQ_TEXT_MODEL, messages=[{"role": "user", "content": f"Generate image prompt in English for: {prompt}. Keep under 200 chars."}], temperature=0.8, max_tokens=300)
             img_text = img_resp.choices[0].message.content
-            reply += f"\n\n🎨 <b>Промпт:</b>\n<code>{img_text}</code>\n\n💡 <a href='https://huggingface.co/spaces/stabilityai/stable-diffusion'>Stable Diffusion</a> | <a href='https://playgroundai.com'>Playground AI</a> | <a href='https://perchance.org/ai-text-to-image-generator'>Perchance</a>"
+            # Escape HTML special characters
+            reply_escaped = html.escape(reply)
+            img_text_escaped = html.escape(img_text)
+            reply = f"{reply_escaped}\n\n🎨 <b>Промпт:</b>\n<code>{img_text_escaped}</code>\n\n💡 <a href='https://huggingface.co/spaces/stabilityai/stable-diffusion'>Stable Diffusion</a> | <a href='https://playgroundai.com'>Playground AI</a> | <a href='https://perchance.org/ai-text-to-image-generator'>Perchance</a>"
+        else:
+            reply = html.escape(reply)
+            
         await typing_msg.edit_text(reply, parse_mode="HTML")
     except Exception as e:
         logger.exception("Groq error")
