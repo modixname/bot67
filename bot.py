@@ -821,10 +821,15 @@ def _setup_bot():
     logger.info("🚀 Bot started!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
-# Start bot in a background thread when module loads (for Render)
+# Start bot in background when module loads (for Render/Gunicorn)
 if TELEGRAM_TOKEN and GROQ_API_KEY:
     bot_thread = threading.Thread(target=_setup_bot, daemon=True)
     bot_thread.start()
 
+# For local development
 if __name__ == "__main__":
-    _setup_bot()
+    if TELEGRAM_TOKEN and GROQ_API_KEY:
+        _setup_bot()
+    else:
+        # Run Flask server only
+        server.run(host="0.0.0.0", port=int(os.getenv("PORT", 3000)))
