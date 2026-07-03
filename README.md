@@ -1,0 +1,144 @@
+# 🤖 Telegram AI Bot (Groq + Mini-Game)
+
+Многофункциональный Telegram-бот с искусственным интеллектом на базе **Groq API** (бесплатно, быстро).
+
+## 🚀 Возможности
+
+| Функция | Описание |
+|---------|----------|
+| 🤖 **AI Чат** | Отвечает на любые вопросы как ChatGPT |
+| 📸 **Распознавание фото** | Отправь фото — бот опишет что на нём |
+| 🎨 **Генерация изображений** | По текстовому описанию создаёт промпт + ссылки на бесплатные генераторы |
+| 🎮 **Мини-игра** | «Угадай число» от 1 до 50 |
+
+## 📦 Установка
+
+### 1. Клонируй / скачай папку
+
+```bash
+cd tg_ai_bot
+```
+
+### 2. Установи зависимости
+
+```bash
+pip install -r requirements.txt
+```
+
+### 3. Получи API ключи
+
+#### 🔑 Telegram Bot Token
+1. Напиши [@BotFather](https://t.me/BotFather) в Telegram
+2. Отправь `/newbot` и следуй инструкциям
+3. Скопируй полученный токен
+
+#### 🔑 Groq API Key (бесплатно)
+1. Зайди на [console.groq.com/keys](https://console.groq.com/keys)
+2. Нажми **Create API Key**
+3. Скопируй ключ (начинается с `gsk_...`)
+
+### 4. Вставь ключи в `.env`
+
+Открой файл `.env` и замени плейсхолдеры:
+
+```env
+TELEGRAM_BOT_TOKEN=твой_токен_сюда
+GROQ_API_KEY=твой_groq_ключ_сюда
+```
+
+### 5. Запусти бота
+
+```bash
+python bot.py
+```
+
+---
+
+## 🌐 Бесплатный хостинг (чтобы бот работал 24/7)
+
+### Вариант 1: **Render** (рекомендую) — самый простой
+
+1. Зарегистрируйся на [render.com](https://render.com) (через GitHub)
+2. Нажми **New +** → **Web Service**
+3. Подключи свой GitHub репозиторий с ботом
+4. Настройки:
+   - **Name**: `tg-ai-bot`
+   - **Runtime**: `Python 3`
+   - **Build Command**: `pip install -r requirements.txt`
+   - **Start Command**: `python bot.py`
+   - **Plan**: **Free** (бесплатно)
+5. В разделе **Environment** добавь переменные:
+   - `TELEGRAM_BOT_TOKEN` = твой токен
+   - `GROQ_API_KEY` = твой groq ключ
+6. Нажми **Deploy** ✅
+
+> ⚠️ На бесплатном плане Render "засыпает" через 15 мин бездействия. Чтобы бот просыпался — добавь [UptimeRobot](https://uptimerobot.com) (бесплатно) и пингуй URL своего сервиса раз в 5 минут.
+
+### Вариант 2: **PythonAnywhere** (бесплатно, но без вебхуков)
+
+1. Зарегистрируйся на [pythonanywhere.com](https://pythonanywhere.com)
+2. Загрузи файлы через **Files** → **Upload**
+3. Установи зависимости через Bash консоль:
+   ```bash
+   pip install --user -r requirements.txt
+   ```
+4. Создай файл `.env` с ключами
+5. Запусти: `python bot.py` (но консоль закроется при выходе)
+6. Лучше используй **Always-on task** (бесплатно 1 задача) или **Scheduled task** каждые 10 мин
+
+### Вариант 3: **Railway** (бесплатно $5 кредитов)
+
+1. Зарегистрируйся на [railway.app](https://railway.app)
+2. Нажми **New Project** → **Deploy from GitHub repo**
+3. Добавь переменные окружения (Environment Variables)
+4. Start Command: `python bot.py`
+5. Деплой ✅
+
+### Вариант 4: **Hugging Face Spaces** (бесплатно)
+
+1. Зарегистрируйся на [huggingface.co](https://huggingface.co)
+2. Создай **New Space** → **Docker** / **Gradio** (но можно и просто Python)
+3. Загрузи файлы
+4. Добавь `TELEGRAM_BOT_TOKEN` и `GROQ_API_KEY` в **Settings → Secrets**
+5. Запустится автоматически
+
+### Вариант 5: **VPS** (для продвинутых)
+
+Арендуй самый дешёвый VPS за ~$3-5/мес:
+- [Hetzner](https://hetzner.com) (€3.5/мес)
+- [DigitalOcean](https://digitalocean.com) ($4/мес)
+- [VDSina](https://vdsina.ru) (от 150₽/мес)
+
+Установи Python, загрузи бота, запусти через `screen` или `systemd`.
+
+---
+
+## 🧠 О Groq API
+
+Groq — это **бесплатный** API для работы с LLM (Llama, Mixtral, Gemma и др.):
+- ⚡ Очень быстрый (до 1000 токенов/сек)
+- 💸 **Бесплатный** (на момент написания — 30 запросов/мин, 14400/день)
+- 👁 Поддерживает **Vision** (распознавание изображений)
+- 🔗 [console.groq.com](https://console.groq.com)
+
+---
+
+## 📁 Структура проекта
+
+```
+tg_ai_bot/
+├── bot.py           # Основной код бота
+├── requirements.txt # Зависимости
+├── .env             # API ключи (не публиковать!)
+└── README.md        # Эта инструкция
+```
+
+## ⚙️ Команды
+
+- `/start` или `/menu` — показать главное меню
+
+## 🛠 Технологии
+
+- [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot) v20+
+- [Groq Python SDK](https://github.com/groq/groq-python)
+- Модель: `llama-3.2-90b-vision-preview` (текст + vision)
