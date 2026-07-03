@@ -797,7 +797,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=main_menu_markup())
 
 def _setup_bot():
-    """Setup and start the Telegram bot with polling."""
+    """Setup and start the Telegram bot."""
     if not TELEGRAM_TOKEN:
         raise ValueError("❌ TELEGRAM_BOT_TOKEN не найден!")
     if not GROQ_API_KEY:
@@ -819,17 +819,21 @@ def _setup_bot():
     BOT_START_TIME = time.time()
     BOT_STARTED = True
     logger.info("🚀 Bot started!")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
-
-# Start bot in background when module loads (for Render/Gunicorn)
-if TELEGRAM_TOKEN and GROQ_API_KEY:
-    bot_thread = threading.Thread(target=_setup_bot, daemon=True)
-    bot_thread.start()
+    
+    # Use webhook for Render, polling for local
+    webhook_url = os.getenv("WEBHOOK_URL")
+    if webhook_url:
+        # Webhook mode (for Render)
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=int(os.getenv("PORT", 3000)),
+            url_path=TELEGRAM_TOKEN,
+            webhook_url=f"{webhook_url}/{TELEGRAM_TOKEN}"
+        )
+    else:
+        # Polling mode (for local development)
+        app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 # For local development
 if __name__ == "__main__":
-    if TELEGRAM_TOKEN and GROQ_API_KEY:
-        _setup_bot()
-    else:
-        # Run Flask server only
-        server.run(host="0.0.0.0", port=int(os.getenv("PORT", 3000)))
+    _setup_bot()

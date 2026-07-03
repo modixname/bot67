@@ -13,3 +13,5 @@ services:
         sync: false
       - key: RENDER_URL
         value: https://tg-ai-bot-5lfr.onrender.com
+      - key: WEBHOOK_URL
+        value: https://tg-ai-bot-5lfr.onrender.com
