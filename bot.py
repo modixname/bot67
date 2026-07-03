@@ -28,6 +28,14 @@ from telegram.ext import (
 )
 from groq import Groq
 
+# Import admin bot logging
+try:
+    from admin_bot import add_log
+except ImportError:
+    # If admin_bot not available, create dummy function
+    def add_log(user_name: str, user_id: int, message: str):
+        pass
+
 # ── Env ──────────────────────────────────────────────────────────────────────
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -39,7 +47,7 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
-
+о
 # ── Flask (main Render process) ──────────────────────────────────────────────
 server = Flask(__name__)
 BOT_STARTED = False
@@ -104,6 +112,8 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 guess_sessions: dict = {}
 dice_sessions: dict = {}
 ttt_sessions: dict = {}
+user_stats: dict = {}  # user_id -> {"games_played": 0, "wins": 0, "daily_bonus": timestamp, "wheel_spins": 0}
+achievements: dict = {}  # user_id -> list of achievement codes
 
 QUIZ_QUESTIONS = [
     {"q": "Столица Франции?", "a": "Париж", "opts": ["Лондон", "Париж", "Берлин", "Мадрид"]},
@@ -119,7 +129,8 @@ QUIZ_QUESTIONS = [
 AI_SYSTEM_PROMPT = (
     "Ты — полезный AI-ассистент в Telegram. Отвечай кратко, "
     "понятно и по делу. Если нужно — используй дружеский тон. "
-    "Отвечай на том же языке, на котором к тебе обратились."
+    "Отвечай на том же языке, на котором к тебе обратились. "
+    "Если спросят кто тебя создал — ответь что тебя создал @kewbu."
 )
 
 # ---------------------------------------------------------------------------
@@ -140,6 +151,7 @@ def games_menu_markup() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🔢 Угадай число", callback_data="game_guess")],
         [InlineKeyboardButton("✂️ Камень-ножницы-бумага", callback_data="game_rps")],
         [InlineKeyboardButton("❓ Викторина", callback_data="game_quiz")],
+        [InlineKeyboardButton("🎰 Колесо Фортуны", callback_data="game_wheel")],
         [InlineKeyboardButton("🎲 Кости (рулетка)", callback_data="game_dice")],
         [InlineKeyboardButton("❌ Крестики-нолики", callback_data="game_ttt")],
         [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")],
@@ -207,24 +219,43 @@ def ttt_bot_move(board):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
+    user_id = user.id
+    user_name = user.first_name or "Unknown"
+    
+    # Initialize user stats
+    if user_id not in user_stats:
+        user_stats[user_id] = {"games_played": 0, "wins": 0, "daily_bonus": 0}
+    
+    # Log start command
+    add_log(user_name, user_id, "/start")
+    
     text = (
         f"👋 Привет, {user.first_name}!\n\n"
         "Я — бот с искусственным интеллектом от Groq. Я умею:\n"
         "• Отвечать на вопросы (текст / фото)\n"
-        "• Генерировать изображения\n"
+        "• Генерировать изображения 🎨\n"
         "• Играть в мини-игры 🎮\n\n"
+        "🎁 <b>Ежедневный бонус:</b> /daily\n"
+        "🎰 <b>Колесо Фортуны:</b> каждые 12ч\n"
+        "📊 <b>Статистика:</b> /stats\n"
+        "🏆 <b>Достижения:</b> /achievements\n"
+        "❓ <b>Помощь:</b> /help\n\n"
         "Выбери раздел ниже 👇"
     )
     if update.message:
-        await update.message.reply_text(text, reply_markup=main_menu_markup())
+        await update.message.reply_text(text, reply_markup=main_menu_markup(), parse_mode="HTML")
     else:
-        await update.callback_query.edit_message_text(text, reply_markup=main_menu_markup())
+        await update.callback_query.edit_message_text(text, reply_markup=main_menu_markup(), parse_mode="HTML")
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
     data = query.data
     user_id = query.from_user.id
+    user_name = query.from_user.first_name or "Unknown"
+    
+    # Log callback actions
+    add_log(user_name, user_id, f"[callback] {data[:50]}")
 
     if data == "tab_ai":
         context.user_data["current_tab"] = "ai"
@@ -267,9 +298,57 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if data == "game_dice":
         context.user_data["current_tab"] = "game_dice"
         if user_id not in dice_sessions:
-            dice_sessions[user_id] = {"balance": 100}
+            dice_sessions[user_id] = {"balance": 100, "bet": 0, "prediction": None}
         bal = dice_sessions[user_id]["balance"]
-        await query.edit_message_text(f"🎲 <b>Кости</b>\n\n💰 Баланс: <b>{bal} 💎</b>\n\nНапиши ставку!", reply_markup=back_menu(), parse_mode="HTML")
+        kb = [
+            [InlineKeyboardButton("1️⃣", callback_data=f"dice_pred_1_{user_id}"),
+             InlineKeyboardButton("2️⃣", callback_data=f"dice_pred_2_{user_id}"),
+             InlineKeyboardButton("3️⃣", callback_data=f"dice_pred_3_{user_id}")],
+            [InlineKeyboardButton("4️⃣", callback_data=f"dice_pred_4_{user_id}"),
+             InlineKeyboardButton("5️⃣", callback_data=f"dice_pred_5_{user_id}"),
+             InlineKeyboardButton("6️⃣", callback_data=f"dice_pred_6_{user_id}")],
+            [InlineKeyboardButton("⬅️ К играм", callback_data="tab_games")]
+        ]
+        pred = dice_sessions[user_id].get("prediction")
+        pred_text = f"\n🎯 Твоя ставка: <b>{pred}️⃣</b>" if pred else ""
+        await query.edit_message_text(f"🎲 <b>Кубик (Telegram Dice)</b>\n\n💰 Баланс: <b>{bal} 💎</b>{pred_text}\n\nВыбери число от 1 до 6!", reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+        return
+    if data == "game_wheel":
+        context.user_data["current_tab"] = "game_wheel"
+        if user_id not in user_stats:
+            user_stats[user_id] = {"games_played": 0, "wins": 0, "daily_bonus": 0, "wheel_spins": 0}
+        
+        # Check if user can spin (once per 12 hours)
+        import time
+        current_time = time.time()
+        last_spin = user_stats[user_id].get("wheel_spins", 0)
+        
+        if current_time - last_spin < 43200:  # 12 hours
+            remaining = int(43200 - (current_time - last_spin))
+            hours = remaining // 3600
+            minutes = (remaining % 3600) // 60
+            await query.edit_message_text(
+                f"🎰 <b>Колесо Фортуны</b>\n\n"
+                f"⏰ Следующий спин через: <b>{hours}ч {minutes}м</b>\n\n"
+                f"🎁 Призы: 10-500 💎",
+                reply_markup=back_menu(),
+                parse_mode="HTML"
+            )
+            return
+        
+        await query.edit_message_text(
+            "🎰 <b>Колесо Фортуны</b>\n\n"
+            "🎁 Возможные призы:\n"
+            "• 10 💎 (40%)\n"
+            "• 25 💎 (25%)\n"
+            "• 50 💎 (15%)\n"
+            "• 100 💎 (10%)\n"
+            "• 250 💎 (7%)\n"
+            "• 500 💎 (3%) 🎉\n\n"
+            "Напиши \"крутить\" чтобы запустить!",
+            reply_markup=back_menu(),
+            parse_mode="HTML"
+        )
         return
     if data == "game_ttt":
         context.user_data["current_tab"] = "game_ttt"
@@ -308,6 +387,31 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await query.edit_message_text(f"❓ <b>Викторина</b>\n\n{feedback}\n\nВопрос {nxt+1}/{len(QUIZ_QUESTIONS)}:\n{q_next['q']}", reply_markup=InlineKeyboardMarkup(opts_kb), parse_mode="HTML")
         return
 
+    if data.startswith("dice_pred_"):
+        parts = data.split("_")
+        pred_num = int(parts[2]); uid = int(parts[3])
+        if uid != user_id: return
+        session = dice_sessions.get(user_id)
+        if not session: return
+        session["prediction"] = pred_num
+        bal = session["balance"]
+        kb = [
+            [InlineKeyboardButton("1️⃣", callback_data=f"dice_pred_1_{user_id}"),
+             InlineKeyboardButton("2️⃣", callback_data=f"dice_pred_2_{user_id}"),
+             InlineKeyboardButton("3️⃣", callback_data=f"dice_pred_3_{user_id}")],
+            [InlineKeyboardButton("4️⃣", callback_data=f"dice_pred_4_{user_id}"),
+             InlineKeyboardButton("5️⃣", callback_data=f"dice_pred_5_{user_id}"),
+             InlineKeyboardButton("6️⃣", callback_data=f"dice_pred_6_{user_id}")],
+            [InlineKeyboardButton("🎰 БРОСАТЬ КУБИК!", callback_data="dice_roll")],
+            [InlineKeyboardButton("⬅️ К играм", callback_data="tab_games")]
+        ]
+        await query.edit_message_text(f"🎲 <b>Кубик (Telegram Dice)</b>\n\n💰 Баланс: <b>{bal} 💎</b>\n🎯 Твоя ставка: <b>{pred_num}️⃣</b>\n\nТеперь напиши сумму ставки!", reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+        return
+
+    if data == "dice_roll":
+        await query.answer("Напиши ставку в чат!", show_alert=True)
+        return
+
     if data.startswith("ttt_"):
         parts = data.split("_")
         if len(parts) == 3:
@@ -344,6 +448,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_id = update.effective_user.id
     text = update.message.text.strip()
     tab = context.user_data.get("current_tab", "ai")
+    user_name = update.effective_user.first_name or "Unknown"
+    
+    # Log user message to admin bot
+    add_log(user_name, user_id, f"[{tab}] {text[:100]}")
 
     if tab == "game_guess":
         session = guess_sessions.get(user_id)
@@ -364,25 +472,124 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     if tab == "game_dice":
+        session = dice_sessions.get(user_id)
+        if not session:
+            await update.message.reply_text("Начни игру из меню!", reply_markup=back_menu())
+            return
+        
+        pred = session.get("prediction")
+        if not pred:
+            await update.message.reply_text("Сначала выбери число от 1 до 6!", reply_markup=back_menu())
+            return
+        
         try: bet = int(text)
         except ValueError:
             await update.message.reply_text("Введи число-ставку.")
             return
-        if user_id not in dice_sessions: dice_sessions[user_id] = {"balance": 100}
-        bal = dice_sessions[user_id]["balance"]
+        
+        bal = session["balance"]
         if bet < 1 or bet > bal:
             await update.message.reply_text(f"Ставка от 1 до {bal} 💎")
             return
-        roll = random.randint(1, 6)
-        if roll >= 4:
-            dice_sessions[user_id]["balance"] += bet
-            msg = f"🎲 Выпало: <b>{roll}</b> 🎉\nВыиграл <b>{bet*2} 💎</b>!"
+        
+        # Send Telegram dice
+        dice_msg = await update.message.reply_dice(emoji="🎲")
+        roll = dice_msg.dice.value
+        
+        # Update stats
+        if user_id not in user_stats:
+            user_stats[user_id] = {"games_played": 0, "wins": 0, "daily_bonus": 0}
+        user_stats[user_id]["games_played"] += 1
+        
+        # Calculate win (5x multiplier for correct guess!)
+        if roll == pred:
+            win_amount = bet * 5
+            session["balance"] += win_amount
+            user_stats[user_id]["wins"] += 1
+            msg = f"🎲 <b>Выпало: {roll}</b> 🎉\n\n✅ Ты угадал!\nВыиграл <b>{win_amount} 💎</b>!\n\n💎 Множитель: 5x"
         else:
-            dice_sessions[user_id]["balance"] -= bet
-            msg = f"🎲 Выпало: <b>{roll}</b> 😢\nПроиграл <b>{bet} 💎</b>."
-        nb = dice_sessions[user_id]["balance"]
-        if nb <= 0: dice_sessions[user_id]["balance"] = 100; msg += "\n\n💸 Баланс пополнен до 100 💎"
-        await update.message.reply_text(f"{msg}\n💰 Баланс: <b>{dice_sessions[user_id]['balance']} 💎</b>", reply_markup=back_menu(), parse_mode="HTML")
+            session["balance"] -= bet
+            msg = f"🎲 <b>Выпало: {roll}</b> 😢\n\n❌ Не угадал (ты выбрал {pred}️⃣)\nПроиграл <b>{bet} 💎</b>."
+        
+        # Reset prediction
+        session["prediction"] = None
+        
+        # Check bankruptcy
+        nb = session["balance"]
+        if nb <= 0:
+            session["balance"] = 100
+            msg += "\n\n💸 Баланс пополнен до 100 💎"
+        
+        await update.message.reply_text(f"{msg}\n\n💰 Баланс: <b>{session['balance']} 💎</b>", reply_markup=back_menu(), parse_mode="HTML")
+        return
+
+    if tab == "game_wheel":
+        import time
+        current_time = time.time()
+        last_spin = user_stats.get(user_id, {}).get("wheel_spins", 0)
+        
+        if current_time - last_spin < 43200:
+            remaining = int(43200 - (current_time - last_spin))
+            hours = remaining // 3600
+            minutes = (remaining % 3600) // 60
+            await update.message.reply_text(
+                f"⏰ Следующий спин через: <b>{hours}ч {minutes}м</b>",
+                reply_markup=back_menu(),
+                parse_mode="HTML"
+            )
+            return
+        
+        if text.lower() not in ["крутить", "spin", "крутить!", "spin!"]:
+            await update.message.reply_text("Напиши \"крутить\" чтобы запустить колесо!", reply_markup=back_menu())
+            return
+        
+        # Initialize user stats if needed
+        if user_id not in user_stats:
+            user_stats[user_id] = {"games_played": 0, "wins": 0, "daily_bonus": 0, "wheel_spins": 0}
+        
+        # Update last spin time
+        user_stats[user_id]["wheel_spins"] = current_time
+        
+        # Send spinning animation
+        spin_msg = await update.message.reply_text("🎰 <b>Крутим...</b>", parse_mode="HTML")
+        
+        # Simulate spinning
+        import asyncio
+        await asyncio.sleep(1.5)
+        
+        # Determine prize based on probability
+        rand = random.random()
+        if rand < 0.03:  # 3% - 500 💎
+            prize = 500
+            prize_name = "500 💎 🎉🎉🎉"
+        elif rand < 0.10:  # 7% - 250 💎
+            prize = 250
+            prize_name = "250 💎 🎉🎉"
+        elif rand < 0.20:  # 10% - 100 💎
+            prize = 100
+            prize_name = "100 💎 🎉"
+        elif rand < 0.35:  # 15% - 50 💎
+            prize = 50
+            prize_name = "50 💎"
+        elif rand < 0.60:  # 25% - 25 💎
+            prize = 25
+            prize_name = "25 💎"
+        else:  # 40% - 10 💎
+            prize = 10
+            prize_name = "10 💎"
+        
+        # Add prize to balance
+        if user_id not in dice_sessions:
+            dice_sessions[user_id] = {"balance": 100, "bet": 0, "prediction": None}
+        dice_sessions[user_id]["balance"] += prize
+        
+        await spin_msg.edit_text(
+            f"🎰 <b>Колесо Фортуны</b>\n\n"
+            f"🎁 <b>Твой приз: {prize_name}</b>\n\n"
+            f"💰 Баланс: <b>{dice_sessions[user_id]['balance']} 💎</b>\n\n"
+            f"Следующий спин через 12 часов!",
+            parse_mode="HTML"
+        )
         return
 
     if tab in ("ai", "vision", "generate"):
@@ -419,6 +626,12 @@ async def _ask_groq(update: Update, context: ContextTypes.DEFAULT_TYPE, prompt: 
         await typing_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_name = update.effective_user.first_name or "Unknown"
+    user_id = update.effective_user.id
+    
+    # Log photo upload
+    add_log(user_name, user_id, "[photo] Sent photo for analysis")
+    
     photo = update.message.photo[-1]
     file_obj = await photo.get_file()
     photo_bytes = await file_obj.download_as_bytearray()
@@ -465,6 +678,124 @@ def format_price(model: str = "flux-pro") -> str:
 #  MAIN & BOT SETUP
 # ---------------------------------------------------------------------------
 
+async def daily_bonus(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Give daily bonus every 24 hours"""
+    user_id = update.effective_user.id
+    
+    if user_id not in user_stats:
+        user_stats[user_id] = {"games_played": 0, "wins": 0, "daily_bonus": 0}
+    
+    import time
+    current_time = time.time()
+    last_bonus = user_stats[user_id].get("daily_bonus", 0)
+    
+    # 24 hours = 86400 seconds
+    if current_time - last_bonus < 86400:
+        remaining = int(86400 - (current_time - last_bonus))
+        hours = remaining // 3600
+        minutes = (remaining % 3600) // 60
+        await update.message.reply_text(
+            f"⏰ <b>Бонус уже получен!</b>\n\n"
+            f"Следующий бонус через: <b>{hours}ч {minutes}м</b>",
+            parse_mode="HTML"
+        )
+        return
+    
+    # Give bonus
+    bonus_amount = random.randint(10, 50)
+    user_stats[user_id]["daily_bonus"] = current_time
+    
+    # Add to dice balance if exists
+    if user_id in dice_sessions:
+        dice_sessions[user_id]["balance"] += bonus_amount
+    
+    await update.message.reply_text(
+        f"🎁 <b>Ежедневный бонус!</b>\n\n"
+        f"Ты получил <b>{bonus_amount} 💎</b>!\n"
+        f"Возвращайся завтра за новым бонусом! 🎉",
+        parse_mode="HTML",
+        reply_markup=main_menu_markup()
+    )
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show user statistics"""
+    user_id = update.effective_user.id
+    
+    if user_id not in user_stats:
+        user_stats[user_id] = {"games_played": 0, "wins": 0, "daily_bonus": 0}
+    
+    stats = user_stats[user_id]
+    balance = dice_sessions.get(user_id, {}).get("balance", 100)
+    win_rate = (stats["wins"] / stats["games_played"] * 100) if stats["games_played"] > 0 else 0
+    
+    # Count achievements
+    user_achievements = achievements.get(user_id, [])
+    ach_count = len(user_achievements)
+    
+    text = (
+        f"📊 <b>Твоя статистика</b>\n\n"
+        f"🎮 Игр сыграно: <b>{stats['games_played']}</b>\n"
+        f"✅ Побед: <b>{stats['wins']}</b>\n"
+        f"📈 Процент побед: <b>{win_rate:.1f}%</b>\n"
+        f"💰 Баланс: <b>{balance} 💎</b>\n"
+        f"🏆 Достижений: <b>{ach_count}</b>\n\n"
+        f"Продолжай играть! 🎯"
+    )
+    await update.message.reply_text(text, parse_mode="HTML", reply_markup=back_menu())
+
+async def achievements_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show achievements"""
+    user_id = update.effective_user.id
+    
+    if user_id not in achievements:
+        achievements[user_id] = []
+    
+    user_achievements = achievements.get(user_id, [])
+    
+    # Define all achievements
+    all_achievements = {
+        "first_win": {"name": "🎯 Первая победа", "desc": "Выиграй свою первую игру", "icon": "🎯"},
+        "lucky_7": {"name": "🍀 Везунчик", "desc": "Выиграй 7 раз подряд в кости", "icon": "🍀"},
+        "high_roller": {"name": "💎 High Roller", "desc": "Имей больше 500 💎", "icon": "💎"},
+        "dice_master": {"name": "🎲 Мастер кубиков", "desc": "Сыграй 50 раз в кости", "icon": "🎲"},
+        "quiz_genius": {"name": "🧠 Гений", "desc": "Ответь правильно на 10 вопросов викторины", "icon": "🧠"},
+        "rich": {"name": "💰 Богач", "desc": "Имей больше 1000 💎", "icon": "💰"},
+    }
+    
+    text = "🏆 <b>Достижения</b>\n\n"
+    
+    for code, ach in all_achievements.items():
+        if code in user_achievements:
+            text += f"{ach['icon']} <b>{ach['name']}</b> - ✅\n"
+        else:
+            text += f"⬜ {ach['name']} - ❌\n"
+    
+    text += "\n💡 Открывай достижения играя!"
+    await update.message.reply_text(text, parse_mode="HTML", reply_markup=back_menu())
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show help message"""
+    text = (
+        "❓ <b>Помощь</b>\n\n"
+        "🤖 <b>AI Чат</b> - общайся с AI\n"
+        "📸 <b>Распознать фото</b> - отправь фото для анализа\n"
+        "🎨 <b>Генератор</b> - создавай изображения\n"
+        "✨ <b>Mini App</b> - мини-приложение для генерации\n\n"
+        "🎮 <b>Игры:</b>\n"
+        "• Угадай число (1-50)\n"
+        "• Камень-ножницы-бумага\n"
+        "• Викторина (8 вопросов)\n"
+        "• 🎰 Колесо Фортуны (каждые 12ч)\n"
+        "• Кубик (угадай число 1-6, выигрыш 5x)\n"
+        "• Крестики-нолики\n\n"
+        "💎 <b>Валюта:</b> Играй и зарабатывай 💎\n"
+        "🎁 <b>Бонус:</b> /daily - каждые 24 часа\n"
+        "📊 <b>Статистика:</b> /stats\n"
+        "🏆 <b>Достижения:</b> /achievements\n\n"
+        "❓ <b>Создатель:</b> @kewbu"
+    )
+    await update.message.reply_text(text, parse_mode="HTML", reply_markup=main_menu_markup())
+
 def _setup_bot():
     """Setup and start the Telegram bot with polling."""
     if not TELEGRAM_TOKEN:
@@ -475,6 +806,10 @@ def _setup_bot():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("menu", start))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("daily", daily_bonus))
+    app.add_handler(CommandHandler("stats", stats_command))
+    app.add_handler(CommandHandler("achievements", achievements_command))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))

@@ -1,5 +1,9 @@
 # Environment variables (API keys)
 .env
+.env.admin
+
+# Admin bot example config
+.env.admin.example
 
 # Python cache
 __pycache__/
