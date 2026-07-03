@@ -823,7 +823,7 @@ def _setup_bot():
     # Use webhook for Render, polling for local
     webhook_url = os.getenv("WEBHOOK_URL")
     if webhook_url:
-        # Webhook mode (for Render)
+        # Webhook mode (for Render) - run in main thread
         app.run_webhook(
             listen="0.0.0.0",
             port=int(os.getenv("PORT", 3000)),
@@ -834,6 +834,6 @@ def _setup_bot():
         # Polling mode (for local development)
         app.run_polling(allowed_updates=Update.ALL_TYPES)
 
-# For local development
+# Start bot only when running directly (not when imported by Gunicorn)
 if __name__ == "__main__":
     _setup_bot()
