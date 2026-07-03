@@ -9,6 +9,7 @@ import logging
 import random
 import base64
 import threading
+import time
 from typing import Optional
 from flask import Flask, jsonify
 
@@ -39,11 +40,16 @@ logger = logging.getLogger(__name__)
 # ── Flask (main Render process) ──────────────────────────────────────────────
 server = Flask(__name__)
 BOT_STARTED = False
+BOT_START_TIME = None
 
 @server.route("/")
 @server.route("/health")
 def health():
-    return jsonify({"status": "ok", "bot_running": BOT_STARTED})
+    return jsonify({
+        "status": "ok",
+        "bot_running": BOT_STARTED,
+        "uptime": time.time() - BOT_START_TIME if BOT_START_TIME else None
+    })
 
 # ── Groq models & client ────────────────────────────────────────────────────
 GROQ_VISION_MODEL = "llama-3.2-11b-vision-preview"
@@ -368,10 +374,11 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await _ask_groq(update, context, "Опиши что на фото. Если есть текст — прочитай.", image_data=base64_image)
 
 # ---------------------------------------------------------------------------
-#  MAIN
+#  MAIN & BOT SETUP
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
+def _setup_bot():
+    """Setup and start the Telegram bot with polling."""
     if not TELEGRAM_TOKEN:
         raise ValueError("❌ TELEGRAM_BOT_TOKEN не найден!")
     if not GROQ_API_KEY:
@@ -384,5 +391,16 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
+    global BOT_STARTED, BOT_START_TIME
+    BOT_START_TIME = time.time()
+    BOT_STARTED = True
     logger.info("🚀 Bot started!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+# Start bot in a background thread when module loads (for Render)
+if TELEGRAM_TOKEN and GROQ_API_KEY:
+    bot_thread = threading.Thread(target=_setup_bot, daemon=True)
+    bot_thread.start()
+
+if __name__ == "__main__":
+    _setup_bot()
