@@ -4,9 +4,13 @@ Telegram Bot with AI assistant and Mini-Games
 Powered by Groq API (free, fast LLM inference)
 """
 import os
+import sys
 import logging
 import random
 import base64
+import asyncio
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -530,11 +534,31 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 #  MAIN
 # ---------------------------------------------------------------------------
 
+# ── Simple health-check HTTP server for Render ──────────────────────────────
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"OK")
+    def log_message(self, format, *args):
+        pass  # silence HTTP server logs
+
+def run_http_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    logger.info(f"🌐 Health server listening on port {port}")
+    server.serve_forever()
+
 def main() -> None:
     if not TELEGRAM_TOKEN:
         raise ValueError("❌ TELEGRAM_BOT_TOKEN не найден!")
     if not GROQ_API_KEY:
         raise ValueError("❌ GROQ_API_KEY не найден!")
+
+    # Start health server in a background thread (required by Render)
+    http_thread = threading.Thread(target=run_http_server, daemon=True)
+    http_thread.start()
 
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
