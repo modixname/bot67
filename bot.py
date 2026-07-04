@@ -74,6 +74,9 @@ def mini_app():
         logger.error(f"Error serving mini app: {e}")
         return str(e), 500
 
+# Global application reference for webhook handling
+_application = None
+
 @server.route("/api/generate-image", methods=["POST"])
 def api_generate_image():
     """API endpoint for image generation via Pollinations.ai (FREE)"""
@@ -102,6 +105,23 @@ def api_generate_image():
     except Exception as e:
         logger.error(f"Image generation error: {e}")
         return jsonify({"success": False, "error": str(e)[:200]}), 500
+
+# Webhook endpoint for Telegram
+@server.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
+def webhook():
+    """Handle incoming Telegram webhook updates"""
+    global _application
+    if _application is None:
+        logger.error("Application not initialized for webhook")
+        return "Error", 500
+    
+    try:
+        update = Update.de_json(request.get_json(), _application.bot)
+        _application.create_task(_application.process_update(update))
+        return "OK", 200
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+        return "Error", 500
 
 # ── Groq models & client ────────────────────────────────────────────────────
 GROQ_VISION_MODEL = "llama-3.2-11b-vision-preview"
@@ -798,6 +818,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 def _setup_bot():
     """Setup and start the Telegram bot."""
+    global _application
+    
     if not TELEGRAM_TOKEN:
         raise ValueError("❌ TELEGRAM_BOT_TOKEN не найден!")
     if not GROQ_API_KEY:
@@ -820,6 +842,9 @@ def _setup_bot():
     BOT_STARTED = True
     logger.info("🚀 Bot started!")
     
+    # Store application reference for webhook handling
+    _application = app
+    
     # Use webhook for Render, polling for local
     webhook_url = os.getenv("WEBHOOK_URL")
     if webhook_url:
@@ -835,8 +860,10 @@ def _setup_bot():
         # Polling mode (for local development)
         app.run_polling(allowed_updates=Update.ALL_TYPES)
 
-# Start bot in background thread when module loads (for Render/Gunicorn)
-if TELEGRAM_TOKEN and GROQ_API_KEY:
+# Initialize bot when module loads (for Render/Gunicorn)
+# Only run webhook mode if WEBHOOK_URL is set, otherwise skip auto-init
+if TELEGRAM_TOKEN and GROQ_API_KEY and os.getenv("WEBHOOK_URL"):
+    # For webhook mode, we need to run in a thread since gunicorn is sync
     bot_thread = threading.Thread(target=_setup_bot, daemon=True)
     bot_thread.start()
 
