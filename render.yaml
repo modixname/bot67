@@ -12,6 +12,6 @@ services:
       - key: GROQ_API_KEY
         sync: false
       - key: RENDER_URL
-        value: https://tg-ai-bot-5lfr.onrender.com
+        value: https://tg-ai-bot-uirs.onrender.com
       - key: WEBHOOK_URL
-        value: https://tg-ai-bot-5lfr.onrender.com
+        value: https://tg-ai-bot-uirs.onrender.com

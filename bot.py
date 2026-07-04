@@ -854,7 +854,8 @@ def _setup_bot():
             port=int(os.getenv("PORT", 3000)),
             url_path=TELEGRAM_TOKEN,
             webhook_url=f"{webhook_url}/{TELEGRAM_TOKEN}",
-            close_loop=False
+            close_loop=False,
+            stop_signals=[]
         )
     else:
         # Polling mode (for local development)
